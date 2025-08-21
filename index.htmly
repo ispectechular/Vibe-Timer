@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IEP Hub – Countdown Timer</title>
+  <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --slate:#4A7A92; --teal:#5A94B1; --muted:#879B8D; --purple:#756A85; --lilac:#8E869F;
+      --light:#C2D6E1; --sage:#A0B4A7; --soft:#D3DDD7; --pale:#C4BFD0;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; display:flex; align-items:center; justify-content:center; background:transparent;
+      font-family:'Lexend',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    }
+    .timer-wrap{
+      width:min(92vw, 440px);
+      background:rgba(255,255,255,0.7);
+      backdrop-filter: blur(10px);
+      border-radius:20px;
+      box-shadow:0 10px 20px rgba(0,0,0,0.1);
+      padding:22px;
+      display:flex; flex-direction:column; gap:16px; align-items:center;
+    }
+    .title{
+      font-size:clamp(1.4rem, 3.5vw, 2rem);
+      color:var(--slate); font-weight:700; margin:0; text-align:center;
+    }
+    .display{
+      position:relative; width:100%; max-width:320px; aspect-ratio:1/1;
+      display:grid; place-items:center;
+    }
+    /* Circular progress ring */
+    svg{width:100%; height:100%; transform:rotate(-90deg)}
+    .ring-bg{stroke:var(--light); stroke-width:10; fill:none}
+    .ring{
+      stroke:var(--teal); stroke-linecap:round; stroke-width:10; fill:none;
+      transition:stroke 0.3s ease;
+    }
+    .time{
+      position:absolute; inset:0; display:grid; place-items:center; text-align:center;
+      color:var(--purple); font-weight:700;
+      font-size:clamp(2.6rem, 10vw, 4.8rem);
+      line-height:1;
+    }
+    .label{
+      color:var(--muted); font-weight:700; font-size:clamp(1rem, 2.8vw, 1.25rem);
+    }
+    .controls{
+      width:100%; display:flex; flex-wrap:wrap; gap:10px; justify-content:center; align-items:center;
+    }
+    .btn{
+      appearance:none; border:none; cursor:pointer; padding:10px 14px; border-radius:12px;
+      font-weight:700; letter-spacing:.2px;
+      background:var(--teal); color:white; box-shadow:0 6px 12px rgba(0,0,0,0.08);
+      transition:transform .05s ease, opacity .2s ease, background .2s ease;
+    }
+    .btn.secondary{background:var(--lilac)}
+    .btn.ghost{
+      background:transparent; color:var(--slate); border:2px solid var(--soft);
+    }
+    .btn:active{transform:translateY(1px)}
+    .btn[disabled]{opacity:.5; cursor:not-allowed}
+    .preset{background:var(--slate)}
+    .input-row{
+      width:100%; display:flex; gap:10px; justify-content:center; align-items:center;
+    }
+    .time-input{
+      flex:0 1 150px;
+      border:2px solid var(--soft); border-radius:12px; padding:10px 12px; text-align:center;
+      font-weight:700; color:var(--slate); background:white;
+      font-size:clamp(1rem, 2.8vw, 1.25rem);
+    }
+    .hint{
+      color:var(--muted); font-size:.95rem; text-align:center;
+    }
+  </style>
+</head>
+<body>
+  <div class="timer-wrap" id="wrap">
+    <h2 class="title">Countdown Timer</h2>
+
+    <div class="display" id="display">
+      <svg viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="ring-bg" cx="60" cy="60" r="52"/>
+        <circle class="ring"   cx="60" cy="60" r="52" stroke-dasharray="326.73" stroke-dashoffset="0" />
+      </svg>
+      <div class="time" id="readout">00:00</div>
+    </div>
+
+    <div class="label" id="status">Ready</div>
+
+    <div class="controls">
+      <button class="btn preset" data-min="1">1:00</button>
+      <button class="btn preset" data-min="3">3:00</button>
+      <button class="btn preset" data-min="5">5:00</button>
+      <button class="btn secondary" id="startPause">Start</button>
+      <button class="btn ghost" id="reset">Reset</button>
+    </div>
+
+    <div class="input-row">
+      <input id="custom" class="time-input" placeholder="MM:SS" inputmode="numeric" aria-label="Custom time (MM:SS)">
+      <button class="btn" id="setBtn">Set</button>
+    </div>
+    <div class="hint">Tip: enter time as MM:SS, press Set, then Start. Presets start immediately.</div>
+  </div>
+
+  <script>
+    // --- Elements
+    const wrap = document.getElementById('wrap');
+    const readout = document.getElementById('readout');
+    const statusEl = document.getElementById('status');
+    const ring = document.querySelector('.ring');
+    const startPauseBtn = document.getElementById('startPause');
+    const resetBtn = document.getElementById('reset');
+    const setBtn = document.getElementById('setBtn');
+    const custom = document.getElementById('custom');
+    const presetBtns = Array.from(document.querySelectorAll('.preset'));
+
+    // --- Audio: WebAudio multi-beep with HTMLAudio fallback
+    let ac = null;               // AudioContext
+    let endAlarmAbort = 0;       // cancels ongoing alarm
+    const fallback = new Audio('https://www.soundjay.com/buttons/sounds/beep-07.mp3');
+    fallback.preload = 'auto';
+    let fallbackUnlocked = false;
+
+    function unlockAudio(){
+      if(!ac){
+        try{ ac = new (window.AudioContext || window.webkitAudioContext)(); }catch{}
+      }
+      if(ac && ac.state === 'suspended') ac.resume();
+      if(!fallbackUnlocked){
+        fallback.play().then(()=>{ fallback.pause(); fallback.currentTime = 0; fallbackUnlocked = true; }).catch(()=>{});
+      }
+    }
+
+    function sleep(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
+    function tone(freq=880, ms=300, vol=0.12){
+      if(!ac) return Promise.resolve();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, ac.currentTime);
+      gain.gain.linearRampToValueAtTime(vol, ac.currentTime + 0.01);
+      gain.gain.linearRampToValueAtTime(0.0001, ac.currentTime + ms/1000);
+      osc.connect(gain).connect(ac.destination);
+      osc.start();
+      osc.stop(ac.currentTime + ms/1000 + 0.01);
+      return sleep(ms);
+    }
+
+    async function playEndAlarm(){
+      const id = ++endAlarmAbort;
+      if(ac){
+        // Pattern: 3 short beeps + 1 longer (total ~2.2s)
+        await tone(880, 300); if(id!==endAlarmAbort) return; await sleep(180);
+        await tone(880, 300); if(id!==endAlarmAbort) return; await sleep(180);
+        await tone(880, 300); if(id!==endAlarmAbort) return; await sleep(180);
+        await tone(740, 600, 0.14);
+      } else {
+        // Fallback: looped audio for ~2.2s
+        try{
+          fallback.currentTime = 0; fallback.loop = true; fallback.play();
+          setTimeout(()=>{ fallback.pause(); fallback.loop = false; }, 2200);
+        }catch{}
+      }
+    }
+
+    // --- State
+    let total = 0;        // total seconds set
+    let remain = 0;       // remaining seconds
+    let ticking = false;  // running?
+    let rafId = null;     // requestAnimationFrame id
+    let lastTick = null;  // last timestamp
+
+    const CIRC = 2 * Math.PI * 52; // stroke length of the circle (r=52)
+    ring.setAttribute('stroke-dasharray', CIRC.toFixed(2));
+
+    // --- Helpers
+    function fmt(sec){
+      sec = Math.max(0, Math.floor(sec));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+    function parseTime(str){
+      if(!str) return 0;
+      const clean = str.trim();
+      if(/^\d+$/.test(clean)) return +clean; // plain seconds
+      const parts = clean.split(':');
+      if(parts.length === 1) return (+parts[0]||0) * 60; // minutes
+      const m = parseInt(parts[0],10) || 0;
+      const s = parseInt(parts[1],10) || 0;
+      return m*60 + s;
+    }
+    function setRemain(sec){
+      remain = Math.max(0, Math.min(sec, 24*60*60)); // cap to 24h just in case
+      readout.textContent = fmt(remain);
+      updateRing();
+      updateStatus();
+    }
+    function updateRing(){
+      const frac = total > 0 ? remain / total : 0;
+      const offset = CIRC * (1 - frac);
+      ring.setAttribute('stroke-dashoffset', offset.toFixed(2));
+    }
+    function updateStatus(){
+      statusEl.textContent = ticking ? 'Counting…' : (remain>0 ? 'Paused' : 'Ready');
+    }
+    function setTotal(sec){
+      total = Math.max(0, sec|0);
+      setRemain(total);
+    }
+    function enableInputs(enable){
+      custom.disabled = !enable;
+      setBtn.disabled = !enable;
+      presetBtns.forEach(b => b.disabled = !enable);
+    }
+
+    // --- Timer loop using RAF for smoothness (1s granularity display)
+    function loop(ts){
+      if(!lastTick) lastTick = ts;
+      const delta = ts - lastTick;
+      if(delta >= 1000){
+        lastTick += 1000 * Math.floor(delta/1000);
+        if(remain > 0){
+          setRemain(remain - 1);
+        }
+        if(remain <= 0){
+          stop(true);
+          return;
+        }
+      }
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function start(){
+      if(total <= 0){
+        // If no time set, default to 1 minute
+        setTotal(60);
+      }
+      if(remain <= 0) setRemain(total);
+      ticking = true;
+      startPauseBtn.textContent = 'Pause';
+      enableInputs(false);
+      unlockAudio();
+      endAlarmAbort++; // cancel any in-progress alarm
+      lastTick = null;
+      rafId = requestAnimationFrame(loop);
+      updateStatus();
+    }
+    function pause(){
+      ticking = false;
+      startPauseBtn.textContent = 'Start';
+      enableInputs(true);
+      if(rafId) cancelAnimationFrame(rafId);
+      endAlarmAbort++; // cancel alarm if any
+      updateStatus();
+    }
+    function stop(end=false){
+      ticking = false;
+      startPauseBtn.textContent = 'Start';
+      if(rafId) cancelAnimationFrame(rafId);
+      if(end){
+        setRemain(0);
+        enableInputs(true);
+        statusEl.textContent = 'Done';
+        playEndAlarm();
+      }
+    }
+    function reset(){
+      stop(false);
+      setRemain(total);
+      enableInputs(true);
+      statusEl.textContent = 'Ready';
+      endAlarmAbort++; // cancel alarm if any
+    }
+
+    // --- Events
+    presetBtns.forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const mins = Number(btn.dataset.min)||1;
+        setTotal(mins*60);
+        start(); // quick-access starts immediately
+      });
+    });
+    setBtn.addEventListener('click', ()=>{
+      const seconds = parseTime(custom.value);
+      if(seconds>0){
+        setTotal(seconds);
+        statusEl.textContent = 'Ready';
+      }
+    });
+    startPauseBtn.addEventListener('click', ()=>{
+      ticking ? pause() : start();
+    });
+    resetBtn.addEventListener('click', reset);
+
+    // Keyboard: Space to start/pause, R to reset
+    window.addEventListener('keydown', (e)=>{
+      if(e.code === 'Space'){ e.preventDefault(); ticking ? pause() : start(); }
+      if(e.key.toLowerCase() === 'r'){ e.preventDefault(); reset(); }
+    });
+
+    // Initialize
+    setTotal(0);
+  </script>
+</body>
+</html>
